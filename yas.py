@@ -72,8 +72,7 @@ def extract_ip_addresses(pkts): #Returns unique list of conversation members fro
     addresses = []
     for pkt in pkts:
         if pkt.haslayer(IP):
-            addresses.append(pkt[IP].src)
-            addresses.append(pkt[IP].dst)
+            addresses.extend((pkt[IP].src, pkt[IP].dst))
     return set(addresses)
 
 def parse_timeout_entry(entry): #Converts given interval to seconds
@@ -150,8 +149,11 @@ def summary_rdns_lookup(pkts, res):
    
 def summary_trace(pkts, res): 
     table_data = [["HOST 1", "HOST 2", "COUNT"]]
-    for key, count in packet_counts.items():
-        table_data.append([host_formatter(key[0], pkts), host_formatter(key[1], pkts), count])
+    table_data.extend(
+        [host_formatter(key[0], pkts), host_formatter(key[1], pkts), count]
+        for key, count in packet_counts.items()
+    )
+
     if table_data == 1:
         table = SingleTable([[red("No packets captured")]])
     else:
@@ -172,12 +174,13 @@ def summary_arp_mon(pkts, res):
             return f"{red('<')} Response: {pkt[ARP].hwsrc} has address {pkt[ARP].hwdst}"
         if pkt[ARP].op == 2 and pkt[ARP].psrc == pkt[ARP].pdst:
             return f"{blue('*')} Cache exchange: {pkt[ARP].psrc}"
+
     for pkt in pkts:
         if pkt.haslayer(ARP):
             table_data.append([arp_mon_display(pkt)])
     print(f"{s} ARP monitor {s}")
     #if any(pkt.haslayer(ARP) for pkt in pkts):
-    if len(table_data) != 0:
+    if table_data:
         table = SingleTable(table_data[1:])
     else:
         table = SingleTable([[red("No packets with ARP layer")]])
@@ -192,7 +195,7 @@ def summary_eapol(pkts, res):
     #table_data = [["BSSID", "AUTH TYPE", "AUTH ID", "USER ID", "MD5"]]
     table_data = [[]]
     network_names = defaultdict(list)
-    usernames = list()
+    usernames = []
     eapol_packets_count = 0
     for pkt in pkts:
         if (pkt.haslayer(Dot11) and pkt.type == 0 and pkt.subtype == 8):
@@ -237,9 +240,9 @@ def summary_bssids(pkts, res):
                 dbm_signal = "N/A"
             enc = red("x")
             ssid = p[Dot11Elt].info.decode()
-            bssid = p[Dot11].addr3    
+            bssid = p[Dot11].addr3
             try:
-                channel = int(ord(p[Dot11Elt:3].info))
+                channel = ord(p[Dot11Elt:3].info)
             except:
                 channel = stats.get("channel")
             capability = p.sprintf("{Dot11Beacon:%Dot11Beacon.cap%}\
@@ -308,10 +311,12 @@ def summary_http_requests(pkts, res):
             src = pkt[IP].src
             table_data.append([src, blue(url), method])
     print(f"{s} HTTP requests {s}")
-    if len(table_data) == 0:
-        table = SingleTable(table_data)
-    else:
-        table = SingleTable([[red("No packets with HTTP layer")]])
+    table = (
+        SingleTable([[red("No packets with HTTP layer")]])
+        if table_data
+        else SingleTable(table_data)
+    )
+
     table.inner_heading_row_border = False
     print(table.table)
     if res.OUTPUT:
@@ -323,12 +328,10 @@ def summary_network(res):
     p = subprocess.Popen(["iwconfig", res.IFACE], stdout=subprocess.PIPE)
     output = p.communicate()[0].decode("utf-8")
     #try:
-    quality = re.search('Link Quality=(.*)/..', output).group(1)
-    essid = re.search('ESSID:"(.*)"', output).group(1)
+    quality = re.search('Link Quality=(.*)/..', output)[1]
+    essid = re.search('ESSID:"(.*)"', output)[1]
     wifi_power = (int(quality[0])*4 * colored("+", "green")) + ((7-int(quality[0]))*4 * colored("=", "white", attrs=["dark"]))
     table = SingleTable([[f"ESSID : {blue(essid)}\nSIGNAL: {wifi_power}"]])
-    #except:
-        #table = SingleTable([[red("Cannot obtain signal strength")]])
     table.inner_heading_row_border = False
     print(f"{s} Network stats {s}")
     print(table.table)
@@ -438,16 +441,10 @@ def main():
     if res.TIMEOUT:
         res.TIMEOUT = parse_timeout_entry(res.TIMEOUT)
     res.FILTER = ' '.join(res.FILTER)
-    if res.COUNT == None:
+    if res.COUNT is None:
         res.COUNT = 10**10
-    #Additional options setup----------------
-    sniff_func="sniff"
-    if res.ASYNC:
-        sniff_func = "AsyncSniffer"
-    if res.QUIET:
-        pkt_func = packet_processor_quiet
-    else:
-        pkt_func = packet_processor
+    sniff_func = "AsyncSniffer" if res.ASYNC else "sniff"
+    pkt_func = packet_processor_quiet if res.QUIET else packet_processor
     #Sniffer starts here-------------------
     packets = eval(f"""{sniff_func}(iface=res.IFACE, count=res.COUNT, timeout=res.TIMEOUT, 
             offline=res.READ, filter=res.FILTER, stop_filter=res.STOP_FILTER, monitor=res.MONITOR,
@@ -456,10 +453,8 @@ def main():
         os.system("cls||clear")
     print_summary(packets, res)
     if res.WRITE:
-        file_size = 0
         wrpcap(res.WRITE, packets, append=res.APPEND)
-        for pkt in packets: 
-            file_size += len(pkt)
+        file_size = sum(len(pkt) for pkt in packets)
         print_info(f"Wrote {len(packets)} packets to {res.WRITE} ({sizeof_fmt(file_size)})")
 
 if __name__ == "__main__": 
